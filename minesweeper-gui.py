@@ -124,7 +124,6 @@ class MinesweeperGUI:
         self.timer_label = None
         self.timer_running = False
         
-        # Dark theme colors
         self.bg_primary = '#0a0e27'
         self.bg_secondary = '#1a1f3a'
         self.bg_card = '#252b48'
@@ -162,9 +161,6 @@ class MinesweeperGUI:
                         bg=self.bg_primary, fg=self.accent_blue)
         title.pack()
         
-        
-        
-        # Menu buttons with hover effect
         btn_frame = tk.Frame(frame, bg=self.bg_primary)
         btn_frame.pack(pady=30)
         
@@ -184,7 +180,6 @@ class MinesweeperGUI:
             self.add_hover_effect(btn, color)
 
     def add_hover_effect(self, button, color):
-        """Add hover effect to buttons"""
         def on_enter(e):
             button.config(bg=self.bg_secondary, fg=self.text_primary)
         
@@ -200,7 +195,6 @@ class MinesweeperGUI:
         frame = tk.Frame(self.root, bg=self.bg_primary)
         frame.pack(expand=True)
         
-        # Card container
         card = tk.Frame(frame, bg=self.bg_card, relief='flat', bd=0)
         card.pack(padx=40, pady=40)
         
@@ -288,40 +282,34 @@ class MinesweeperGUI:
     def show_game_board(self):
         self.clear_window()
         
-        # Top frame for info and timer
         top_frame = tk.Frame(self.root, bg=self.bg_card, height=90)
         top_frame.pack(fill='x', padx=15, pady=15)
         
         info_container = tk.Frame(top_frame, bg=self.bg_card)
         info_container.pack(pady=15)
         
-        # Player info
         player_frame = tk.Frame(info_container, bg=self.bg_secondary, relief='flat')
         player_frame.pack(side='left', padx=10, ipadx=15, ipady=8)
         tk.Label(player_frame, text=f"👤 {self.player_name}", font=('Arial', 12, 'bold'),
                 bg=self.bg_secondary, fg=self.text_primary).pack()
         
-        # Difficulty info
         diff_colors = {'Easy': self.accent_green, 'Medium': '#ffa500', 'Hard': '#ff3e6c'}
         diff_frame = tk.Frame(info_container, bg=self.bg_secondary, relief='flat')
         diff_frame.pack(side='left', padx=10, ipadx=15, ipady=8)
         tk.Label(diff_frame, text=f"⚙️ {self.difficulty_mode}", font=('Arial', 12, 'bold'),
                 bg=self.bg_secondary, fg=diff_colors.get(self.difficulty_mode, self.text_primary)).pack()
         
-        # Timer
         timer_frame = tk.Frame(info_container, bg=self.bg_secondary, relief='flat')
         timer_frame.pack(side='left', padx=10, ipadx=15, ipady=8)
         self.timer_label = tk.Label(timer_frame, text="⏱️ 0.00s", font=('Arial', 12, 'bold'),
                                     bg=self.bg_secondary, fg=self.accent_blue)
         self.timer_label.pack()
         
-        # Instructions
         info_frame = tk.Frame(self.root, bg=self.bg_primary)
         info_frame.pack(pady=8)
         tk.Label(info_frame, text="🖱️ Left Click: Reveal  |  Right Click: Flag", 
                 font=('Arial', 11), bg=self.bg_primary, fg=self.text_secondary).pack()
         
-        # Game board frame
         board_container = tk.Frame(self.root, bg=self.bg_card, relief='flat')
         board_container.pack(pady=15, padx=15)
         
@@ -342,7 +330,6 @@ class MinesweeperGUI:
                 row.append(btn)
             self.buttons.append(row)
         
-        # Bottom buttons
         bottom_frame = tk.Frame(self.root, bg=self.bg_primary)
         bottom_frame.pack(pady=15)
         
@@ -379,7 +366,6 @@ class MinesweeperGUI:
             return
         
         if not result:
-            # Hit a mine
             self.timer_running = False
             self.reveal_all_mines()
             elapsed_time = self.game.get_elapsed_time()
@@ -433,7 +419,6 @@ class MinesweeperGUI:
         frame = tk.Frame(self.root, bg=self.bg_primary)
         frame.pack(expand=True, fill='both', padx=20, pady=20)
         
-        # Title
         title_frame = tk.Frame(frame, bg=self.bg_primary)
         title_frame.pack(pady=20)
         
@@ -441,15 +426,13 @@ class MinesweeperGUI:
                 bg=self.bg_primary, fg=self.accent_blue).pack()
         tk.Label(title_frame, text="Hall of Champions", font=('Arial', 12),
                 bg=self.bg_primary, fg=self.text_secondary).pack()
-        
-        # Create treeview container
+    
         tree_container = tk.Frame(frame, bg=self.bg_card, relief='flat')
         tree_container.pack(expand=True, fill='both', padx=20, pady=10)
         
         tree_frame = tk.Frame(tree_container, bg=self.bg_card)
         tree_frame.pack(expand=True, fill='both', padx=15, pady=15)
         
-        # Custom style for treeview
         style = ttk.Style()
         style.theme_use('default')
         style.configure('Custom.Treeview',
@@ -508,8 +491,6 @@ class MinesweeperGUI:
         
         scrollbar.config(command=tree.yview)
         tree.pack(expand=True, fill='both')
-        
-        # Back button
         back_btn = tk.Button(frame, text="← Back to Main Menu", command=self.show_main_menu,
                             font=('Arial', 14, 'bold'), width=22, height=2,
                             bg=self.bg_secondary, fg=self.text_secondary, relief='flat',
