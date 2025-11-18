@@ -3,40 +3,48 @@ import time
 import datetime
 import mysql.connector
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import messagebox
+import os
 
 class Minesweeper:
     def __init__(self, rows, cols, num_mines):
         self.rows, self.cols, self.num_mines = rows, cols, num_mines
         self.board = [[' ' for _ in range(cols)] for _ in range(rows)]
-        self.mine_locations = []
+        self.mine_locations = random.sample(range(rows * cols), num_mines)
         self.revealed_cells = [[False] * cols for _ in range(rows)]
         self.flagged_cells = [[False] * cols for _ in range(rows)]
+        self.questioned_cells = [[False] * cols for _ in range(rows)]  # NEW: Question mark state
+        self.start_time = None
         self.place_mines()
         self.calculate_adjacent_mines()
-        self.start_time = None
-        self.conn = mysql.connector.connect(
-            host='localhost',
-            user='root',
-            passwd='4589',
-            database='minesweeper_leaderboard'
-        )
-        self.create_leaderboard_table()
-
-    def create_leaderboard_table(self):
-        cursor = self.conn.cursor()
-        cursor.execute(
-            '''CREATE TABLE IF NOT EXISTS leaderboard (
-                id INTEGER PRIMARY KEY AUTO_INCREMENT,
-                player_name TEXT,
-                elapsed_time REAL,
-                difficulty_mode TEXT,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                game_won BOOLEAN DEFAULT FALSE)''')
-        self.conn.commit()
+        try:
+            self.conn = mysql.connector.connect(
+                host='localhost', 
+                user='root', 
+                passwd='4589', 
+                database='minesweeper_leaderboard'
+            )
+            cursor = self.conn.cursor()
+            cursor.execute('''CREATE TABLE IF NOT EXISTS leaderboard (
+                id INTEGER PRIMARY KEY AUTO_INCREMENT, 
+                player_name TEXT, 
+                elapsed_time REAL, 
+                game_won BOOLEAN, 
+                difficulty_mode TEXT, 
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            )''')
+            self.conn.commit()
+            cursor.close()
+            print("Database connection established successfully")
+        except mysql.connector.Error as e:
+            print(f"Database connection error: {e}")
+            print("Game will continue without leaderboard functionality")
+            self.conn = None
+        except Exception as e:
+            print(f"Unexpected error during database setup: {e}")
+            self.conn = None
 
     def place_mines(self):
-        self.mine_locations = random.sample(range(self.rows * self.cols), self.num_mines)
         for loc in self.mine_locations:
             row, col = divmod(loc, self.cols)
             self.board[row][col] = '💣'
@@ -46,456 +54,323 @@ class Minesweeper:
         for loc in self.mine_locations:
             row, col = divmod(loc, self.cols)
             for i, j in directions:
-                new_row, new_col = row + i, col + j
-                if 0 <= new_row < self.rows and 0 <= new_col < self.cols and self.board[new_row][new_col] != '💣':
-                    if self.board[new_row][new_col] == ' ':
-                        self.board[new_row][new_col] = '1'
-                    else:
-                        self.board[new_row][new_col] = str(int(self.board[new_row][new_col]) + 1)
+                nr, nc = row + i, col + j
+                if 0 <= nr < self.rows and 0 <= nc < self.cols and self.board[nr][nc] != '💣':
+                    self.board[nr][nc] = '1' if self.board[nr][nc] == ' ' else str(int(self.board[nr][nc]) + 1)
 
     def reveal_cell(self, row, col):
-        if self.flagged_cells[row][col]:
+        if self.flagged_cells[row][col] or self.questioned_cells[row][col] or self.revealed_cells[row][col]:
             return None
-        if not self.revealed_cells[row][col]:
-            self.revealed_cells[row][col] = True
-            if self.start_time is None:
-                self.start_time = time.time()
-            if (row * self.cols + col) in self.mine_locations:
-                return False
-            elif self.board[row][col] == ' ':
-                self.board[row][col] = '0'
-                self.reveal_empty_cells(row, col)
-            return True
-        return None
+        self.revealed_cells[row][col] = True
+        if self.start_time is None:
+            self.start_time = time.time()
+        if (row * self.cols + col) in self.mine_locations:
+            return False
+        if self.board[row][col] == ' ':
+            self.board[row][col] = '0'
+            self.reveal_empty_cells(row, col)
+        return True
 
     def reveal_empty_cells(self, row, col):
-        directions = [(i, j) for i in range(-1, 2) for j in range(-1, 2) if i != 0 or j != 0]
-        for i, j in directions:
-            new_row, new_col = row + i, col + j
-            if 0 <= new_row < self.rows and 0 <= new_col < self.cols and not self.revealed_cells[new_row][new_col]:
-                self.revealed_cells[new_row][new_col] = True
-                if (new_row * self.cols + new_col) not in self.mine_locations and self.board[new_row][new_col] == ' ':
-                    self.board[new_row][new_col] = '0'
-                    self.reveal_empty_cells(new_row, new_col)
+        for i, j in [(i, j) for i in range(-1, 2) for j in range(-1, 2) if i != 0 or j != 0]:
+            nr, nc = row + i, col + j
+            if 0 <= nr < self.rows and 0 <= nc < self.cols and not self.revealed_cells[nr][nc]:
+                self.revealed_cells[nr][nc] = True
+                if (nr * self.cols + nc) not in self.mine_locations and self.board[nr][nc] == ' ':
+                    self.board[nr][nc] = '0'
+                    self.reveal_empty_cells(nr, nc)
 
-    def toggle_flag(self, row, col):
+    def cycle_flag(self, row, col):
+        """NEW: Cycle through unmarked -> flag -> question mark -> unmarked"""
         if not self.revealed_cells[row][col]:
-            self.flagged_cells[row][col] = not self.flagged_cells[row][col]
+            if not self.flagged_cells[row][col] and not self.questioned_cells[row][col]:
+                # Unmarked -> Flag
+                self.flagged_cells[row][col] = True
+            elif self.flagged_cells[row][col]:
+                # Flag -> Question mark
+                self.flagged_cells[row][col] = False
+                self.questioned_cells[row][col] = True
+            else:
+                # Question mark -> Unmarked
+                self.questioned_cells[row][col] = False
             return True
         return False
 
     def get_elapsed_time(self):
-        if self.start_time is not None:
-            return time.time() - self.start_time
-        return 0
+        return time.time() - self.start_time if self.start_time else 0
 
     def check_win(self):
-        for i in range(self.rows):
-            for j in range(self.cols):
-                if (i * self.cols + j) not in self.mine_locations and not self.revealed_cells[i][j]:
-                    return False
-        return True
+        return all(self.revealed_cells[i][j] or (i * self.cols + j) in self.mine_locations 
+                   for i in range(self.rows) for j in range(self.cols))
 
     def update_leaderboard(self, player_name, elapsed_time, game_won, difficulty_mode, play_date):
-        if game_won:
+        if game_won and self.conn:
             try:
-                query = '''INSERT INTO leaderboard (player_name, elapsed_time, game_won, difficulty_mode, timestamp)
-                    VALUES (%s, %s, %s, %s, %s)'''
-                values = (player_name, round(elapsed_time, 2), 1, difficulty_mode, play_date)
                 cursor = self.conn.cursor()
-                cursor.execute(query, values)
+                cursor.execute('''INSERT INTO leaderboard (player_name, elapsed_time, game_won, difficulty_mode, timestamp)
+                                  VALUES (%s, %s, %s, %s, %s)''', 
+                              (player_name, round(elapsed_time, 2), 1, difficulty_mode, play_date))
                 self.conn.commit()
                 cursor.close()
+                print(f"Leaderboard updated for {player_name}")
+            except mysql.connector.Error as e:
+                print(f"Database error while updating leaderboard: {e}")
             except Exception as e:
-                print(f"Error updating leaderboard: {e}")
+                print(f"Unexpected error while updating leaderboard: {e}")
+
+    def __del__(self):
+        """Properly close database connection when object is destroyed"""
+        if hasattr(self, 'conn') and self.conn:
+            try:
+                self.conn.close()
+                print("Database connection closed")
+            except Exception as e:
+                print(f"Error closing database connection: {e}")
 
 
 class MinesweeperGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("Minesweeper")
-        self.root.geometry("650x750")
-        self.root.configure(bg='#0a0e27')
-        
+        self.root.configure(bg="#000000")
+        self.root.attributes('-fullscreen', True)
+        self.root.bind('<Escape>', lambda e: self.root.attributes('-fullscreen', False))
+        self.root.bind('<F11>', lambda e: self.root.attributes('-fullscreen', True))
         self.game = None
         self.buttons = []
         self.player_name = ""
         self.difficulty_mode = ""
         self.timer_label = None
         self.timer_running = False
-        
-        self.bg_primary = '#0a0e27'
-        self.bg_secondary = '#1a1f3a'
-        self.bg_card = '#252b48'
-        self.accent_blue = '#00d4ff'
-        self.accent_purple = '#b24bf3'
-        self.accent_green = '#00ff88'
-        self.text_primary = '#ffffff'
-        self.text_secondary = '#8b92b0'
-        
-        self.colors = {
-            '0': '#4a5568',
-            '1': '#00d4ff',
-            '2': '#00ff88',
-            '3': '#ff3e6c',
-            '4': '#b24bf3',
-            '5': '#ffa500',
-            '6': '#00fff5',
-            '7': '#ff6b9d',
-            '8': '#ffdd00'
-        }
-        
-        self.show_main_menu()
+        self.show_splash_screen()
+
+    def create_button(self, parent, text, font_size, command):
+        return tk.Button(parent, text=text, font=("Arial", font_size), bg="#1a1a1a", fg="#ffffff",
+                        activebackground="#2a2a2a", activeforeground="#00ff88", bd=0,
+                        padx=30 if font_size >= 20 else 25, pady=10 if font_size >= 20 else 8,
+                        cursor="hand2", command=command)
 
     def show_main_menu(self):
         self.clear_window()
-        
-        frame = tk.Frame(self.root, bg=self.bg_primary)
+        frame = tk.Frame(self.root, bg="#000000")
         frame.pack(expand=True)
-        
-        title_frame = tk.Frame(frame, bg=self.bg_primary)
-        title_frame.pack(pady=40)
-        
-        title = tk.Label(title_frame, text="💣 MINESWEEPER", font=('Arial', 40, 'bold'), 
-                        bg=self.bg_primary, fg=self.accent_blue)
-        title.pack()
-        
-        btn_frame = tk.Frame(frame, bg=self.bg_primary)
-        btn_frame.pack(pady=30)
-        
-        buttons_config = [
-            ("🎮 Start Game", self.show_player_input, self.accent_blue),
-            ("🏆 Display Records", self.show_leaderboard, self.accent_purple),
-            ("❌ Exit Game", self.root.quit, '#ff3e6c')
-        ]
-        
-        for text, command, color in buttons_config:
-            btn = tk.Button(btn_frame, text=text, command=command,
-                           font=('Arial', 16, 'bold'), width=22, height=2,
-                           bg=self.bg_card, fg=color, relief='flat',
-                           bd=0, cursor='hand2', activebackground=self.bg_secondary,
-                           activeforeground=color)
-            btn.pack(pady=12)
-            self.add_hover_effect(btn, color)
+        tk.Label(frame, text="MINESWEEPER", font=("Arial", 64, "bold"), bg="#000000", fg="#00ff88").pack(pady=60)
+        self.create_button(frame, "START GAME", 20, self.show_name_input).pack(pady=20)
+        self.create_button(frame, "LEADERBOARD", 20, self.show_leaderboard).pack(pady=20)
+        self.create_button(frame, "EXIT", 20, self.root.quit).pack(pady=20)
+        tk.Label(frame, text="Press ESC to exit fullscreen | F11 to enter fullscreen",
+                font=("Arial", 10), bg="#000000", fg="#555555").pack(pady=40)
 
-    def add_hover_effect(self, button, color):
-        def on_enter(e):
-            button.config(bg=self.bg_secondary, fg=self.text_primary)
-        
-        def on_leave(e):
-            button.config(bg=self.bg_card, fg=color)
-        
-        button.bind('<Enter>', on_enter)
-        button.bind('<Leave>', on_leave)
-
-    def show_player_input(self):
+    def show_name_input(self):
         self.clear_window()
-        
-        frame = tk.Frame(self.root, bg=self.bg_primary)
+        frame = tk.Frame(self.root, bg="#000000")
         frame.pack(expand=True)
-        
-        card = tk.Frame(frame, bg=self.bg_card, relief='flat', bd=0)
-        card.pack(padx=40, pady=40)
-        
-        tk.Label(card, text="👤 Enter Your Name", font=('Arial', 24, 'bold'), 
-                bg=self.bg_card, fg=self.text_primary).pack(pady=30, padx=60)
-        
-        entry_frame = tk.Frame(card, bg=self.bg_card)
-        entry_frame.pack(pady=20, padx=60)
-        
-        name_entry = tk.Entry(entry_frame, font=('Arial', 16), width=25,
-                             bg=self.bg_secondary, fg=self.text_primary,
-                             insertbackground=self.accent_blue, relief='flat',
-                             bd=0, highlightthickness=2, highlightbackground=self.bg_secondary,
-                             highlightcolor=self.accent_blue)
-        name_entry.pack(ipady=10)
+        tk.Label(frame, text="ENTER YOUR NAME", font=("Arial", 42, "bold"), bg="#000000", fg="#00ff88").pack(pady=60)
+        name_entry = tk.Entry(frame, font=("Arial", 24), bg="#1a1a1a", fg="#ffffff", insertbackground="#00ff88", bd=0, relief="flat")
+        name_entry.pack(pady=30, ipady=15, ipadx=30)
         name_entry.focus()
         
-        def submit_name():
-            self.player_name = name_entry.get().strip()
-            if self.player_name:
-                self.show_difficulty_menu()
+        def on_continue():
+            if name_entry.get().strip():
+                self.player_name = name_entry.get().strip()
+                self.show_difficulty_selection()
             else:
                 messagebox.showwarning("Warning", "Please enter your name!")
         
-        btn_frame = tk.Frame(card, bg=self.bg_card)
-        btn_frame.pack(pady=30, padx=60)
-        
-        continue_btn = tk.Button(btn_frame, text="Continue →", command=submit_name,
-                                font=('Arial', 14, 'bold'), width=15, height=2,
-                                bg=self.bg_secondary, fg=self.accent_green, relief='flat',
-                                bd=0, cursor='hand2')
-        continue_btn.pack(pady=8)
-        self.add_hover_effect(continue_btn, self.accent_green)
-        
-        back_btn = tk.Button(btn_frame, text="← Back", command=self.show_main_menu,
-                            font=('Arial', 14, 'bold'), width=15, height=2,
-                            bg=self.bg_secondary, fg=self.text_secondary, relief='flat',
-                            bd=0, cursor='hand2')
-        back_btn.pack(pady=8)
-        self.add_hover_effect(back_btn, self.text_secondary)
-        
-        name_entry.bind('<Return>', lambda e: submit_name())
+        self.create_button(frame, "CONTINUE", 20, on_continue).pack(pady=30)
+        self.create_button(frame, "BACK", 16, self.show_main_menu).pack(pady=15)
+        name_entry.bind('<Return>', lambda e: on_continue())
 
-    def show_difficulty_menu(self):
+    def show_difficulty_selection(self):
         self.clear_window()
-        
-        frame = tk.Frame(self.root, bg=self.bg_primary)
+        frame = tk.Frame(self.root, bg="#000000")
         frame.pack(expand=True)
-        
-        tk.Label(frame, text="⚙️ Choose Difficulty", font=('Arial', 28, 'bold'), 
-                bg=self.bg_primary, fg=self.text_primary).pack(pady=40)
-        
-        difficulties = [
-            ("🟢 EASY", "5 mines · Perfect for beginners", 5, 'Easy', self.accent_green),
-            ("🟡 MEDIUM", "8 mines · Moderate challenge", 8, 'Medium', '#ffa500'),
-            ("🔴 HARD", "12 mines · Expert level", 12, 'Hard', '#ff3e6c')
-        ]
-        
-        for title, subtitle, mines, mode, color in difficulties:
-            card = tk.Frame(frame, bg=self.bg_card, relief='flat', bd=0)
-            card.pack(pady=10, padx=60, fill='x')
-            
-            btn = tk.Button(card, text=title, command=lambda m=mines, d=mode: self.start_game(m, d),
-                           font=('Arial', 18, 'bold'), bg=self.bg_card, fg=color,
-                           relief='flat', bd=0, cursor='hand2', anchor='w', padx=30, pady=15)
-            btn.pack(fill='x')
-            
-            tk.Label(card, text=subtitle, font=('Arial', 11), bg=self.bg_card, 
-                    fg=self.text_secondary, anchor='w', padx=30).pack(fill='x', pady=(0, 10))
-            
-            self.add_hover_effect(btn, color)
-        
-        back_btn = tk.Button(frame, text="← Back to Main Menu", command=self.show_main_menu,
-                            font=('Arial', 14, 'bold'), width=20, height=2,
-                            bg=self.bg_secondary, fg=self.text_secondary, relief='flat',
-                            bd=0, cursor='hand2')
-        back_btn.pack(pady=30)
-        self.add_hover_effect(back_btn, self.text_secondary)
+        tk.Label(frame, text="CHOOSE DIFFICULTY", font=("Arial", 42, "bold"), bg="#000000", fg="#00ff88").pack(pady=60)
+        for text, mines, diff in [("EASY (5 Mines)", 5, "Easy"), ("MEDIUM (8 Mines)", 8, "Medium"), ("HARD (12 Mines)", 12, "Hard")]:
+            self.create_button(frame, text, 20, lambda m=mines, d=diff: self.start_game(m, d)).pack(pady=20)
+        self.create_button(frame, "BACK", 16, self.show_main_menu).pack(pady=30)
 
-    def start_game(self, num_mines, difficulty_mode):
-        self.difficulty_mode = difficulty_mode
+    def start_game(self, num_mines, difficulty):
+        self.difficulty_mode = difficulty
         self.game = Minesweeper(10, 10, num_mines)
         self.show_game_board()
 
     def show_game_board(self):
         self.clear_window()
+        self.timer_running = True
+        top_frame = tk.Frame(self.root, bg="#000000")
+        top_frame.pack(pady=30)
+        tk.Label(top_frame, text=f"Player: {self.player_name} | Difficulty: {self.difficulty_mode}",
+                font=("Arial", 18), bg="#000000", fg="#00ff88").pack()
+        self.timer_label = tk.Label(top_frame, text="Time: 0.00s", font=("Arial", 20, "bold"), bg="#000000", fg="#ffffff")
+        self.timer_label.pack(pady=15)
+        # UPDATED: Added question mark instruction
+        tk.Label(top_frame, text="Left Click: Reveal | Right Click: Flag/Question Mark", 
+                font=("Arial", 14), bg="#000000", fg="#666666").pack()
         
-        top_frame = tk.Frame(self.root, bg=self.bg_card, height=90)
-        top_frame.pack(fill='x', padx=15, pady=15)
-        
-        info_container = tk.Frame(top_frame, bg=self.bg_card)
-        info_container.pack(pady=15)
-        
-        player_frame = tk.Frame(info_container, bg=self.bg_secondary, relief='flat')
-        player_frame.pack(side='left', padx=10, ipadx=15, ipady=8)
-        tk.Label(player_frame, text=f"👤 {self.player_name}", font=('Arial', 12, 'bold'),
-                bg=self.bg_secondary, fg=self.text_primary).pack()
-        
-        diff_colors = {'Easy': self.accent_green, 'Medium': '#ffa500', 'Hard': '#ff3e6c'}
-        diff_frame = tk.Frame(info_container, bg=self.bg_secondary, relief='flat')
-        diff_frame.pack(side='left', padx=10, ipadx=15, ipady=8)
-        tk.Label(diff_frame, text=f"⚙️ {self.difficulty_mode}", font=('Arial', 12, 'bold'),
-                bg=self.bg_secondary, fg=diff_colors.get(self.difficulty_mode, self.text_primary)).pack()
-        
-        timer_frame = tk.Frame(info_container, bg=self.bg_secondary, relief='flat')
-        timer_frame.pack(side='left', padx=10, ipadx=15, ipady=8)
-        self.timer_label = tk.Label(timer_frame, text="⏱️ 0.00s", font=('Arial', 12, 'bold'),
-                                    bg=self.bg_secondary, fg=self.accent_blue)
-        self.timer_label.pack()
-        
-        info_frame = tk.Frame(self.root, bg=self.bg_primary)
-        info_frame.pack(pady=8)
-        tk.Label(info_frame, text="🖱️ Left Click: Reveal  |  Right Click: Flag", 
-                font=('Arial', 11), bg=self.bg_primary, fg=self.text_secondary).pack()
-        
-        board_container = tk.Frame(self.root, bg=self.bg_card, relief='flat')
-        board_container.pack(pady=15, padx=15)
-        
-        board_frame = tk.Frame(board_container, bg=self.bg_secondary)
-        board_frame.pack(padx=15, pady=15)
-        
+        game_frame = tk.Frame(self.root, bg="#000000", padx=20, pady=20)
+        game_frame.pack()
         self.buttons = []
         for i in range(10):
-            row = []
+            row_buttons = []
             for j in range(10):
-                btn = tk.Button(board_frame, text='', width=4, height=2, 
-                               font=('Arial', 11, 'bold'), bg=self.bg_card,
-                               fg=self.text_primary, relief='flat', bd=0, cursor='hand2',
-                               activebackground=self.bg_secondary)
+                btn = tk.Button(game_frame, text="", width=4, height=2, font=("Arial", 12, "bold"),
+                               bg="#1a1a1a", fg="#ffffff", activebackground="#2a2a2a", bd=1, relief="raised", cursor="hand2")
                 btn.grid(row=i, column=j, padx=2, pady=2)
-                btn.bind('<Button-1>', lambda e, r=i, c=j: self.on_left_click(r, c))
-                btn.bind('<Button-3>', lambda e, r=i, c=j: self.on_right_click(r, c))
-                row.append(btn)
-            self.buttons.append(row)
+                btn.bind('<Button-1>', lambda e, r=i, c=j: self.on_cell_click(r, c))
+                btn.bind('<Button-3>', lambda e, r=i, c=j: self.on_cell_right_click(r, c))
+                row_buttons.append(btn)
+            self.buttons.append(row_buttons)
         
-        bottom_frame = tk.Frame(self.root, bg=self.bg_primary)
-        bottom_frame.pack(pady=15)
+        button_frame = tk.Frame(self.root, bg="#000000")
+        button_frame.pack(pady=30)
+        self.create_button(button_frame, "BACK TO MENU", 16, 
+                          lambda: self.show_main_menu() if messagebox.askyesno("Confirm", "Exit game?") else None).pack()
         
-        new_game_btn = tk.Button(bottom_frame, text="🔄 New Game", command=self.show_difficulty_menu,
-                                font=('Arial', 12, 'bold'), bg=self.bg_secondary,
-                                fg=self.accent_blue, width=13, height=2, relief='flat',
-                                bd=0, cursor='hand2')
-        new_game_btn.pack(side='left', padx=8)
-        self.add_hover_effect(new_game_btn, self.accent_blue)
-        
-        menu_btn = tk.Button(bottom_frame, text="🏠 Main Menu", command=self.show_main_menu,
-                            font=('Arial', 12, 'bold'), bg=self.bg_secondary,
-                            fg=self.text_secondary, width=13, height=2, relief='flat',
-                            bd=0, cursor='hand2')
-        menu_btn.pack(side='left', padx=8)
-        self.add_hover_effect(menu_btn, self.text_secondary)
-        
-        self.timer_running = True
         self.update_timer()
 
     def update_timer(self):
         if self.timer_running and self.game:
-            elapsed = self.game.get_elapsed_time()
-            self.timer_label.config(text=f"⏱️ {elapsed:.2f}s")
+            self.timer_label.config(text=f"Time: {self.game.get_elapsed_time():.2f}s")
             self.root.after(100, self.update_timer)
 
-    def on_left_click(self, row, col):
+    def on_cell_click(self, row, col):
         if not self.game:
             return
-        
         result = self.game.reveal_cell(row, col)
-        
-        if result is None:
-            return
-        
-        if not result:
-            self.timer_running = False
-            self.reveal_all_mines()
-            elapsed_time = self.game.get_elapsed_time()
-            messagebox.showinfo("Game Over", f"💣 You hit a mine!\n\nTime: {elapsed_time:.2f}s")
-            self.show_difficulty_menu()
-        else:
+        if result is not None:
             self.update_board()
-            if self.game.check_win():
-                self.timer_running = False
-                elapsed_time = self.game.get_elapsed_time()
-                play_date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                self.game.update_leaderboard(self.player_name, elapsed_time, True, 
-                                            self.difficulty_mode, play_date)
-                self.reveal_all_mines()
-                messagebox.showinfo("Victory!", f"🎉 You won!\n\nTime: {elapsed_time:.2f}s")
-                self.show_difficulty_menu()
-
-    def on_right_click(self, row, col):
-        if not self.game:
-            return
-        
-        if self.game.toggle_flag(row, col):
-            if self.game.flagged_cells[row][col]:
-                self.buttons[row][col].config(text='🚩', bg='#ff3e6c', fg=self.text_primary)
+            if result:
+                if self.game.check_win():
+                    self.timer_running = False
+                    elapsed = self.game.get_elapsed_time()
+                    self.game.update_leaderboard(self.player_name, elapsed, True, self.difficulty_mode, 
+                                                datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+                    messagebox.showinfo("Victory!", f"You Won!\nTime: {elapsed:.2f}s")
+                    self.show_main_menu()
             else:
-                self.buttons[row][col].config(text='', bg=self.bg_card)
+                self.timer_running = False
+                self.reveal_all_mines()
+                messagebox.showinfo("Game Over", f"You hit a mine!\nTime: {self.game.get_elapsed_time():.2f}s")
+                self.show_main_menu()
+
+    def on_cell_right_click(self, row, col):
+        # UPDATED: Use cycle_flag instead of toggle_flag
+        if self.game and self.game.cycle_flag(row, col):
+            self.update_board()
 
     def update_board(self):
+        colors = {'1': '#00d4ff', '2': '#00ff88', '3': '#ff6b6b', '4': '#ffd93d', 
+                  '5': '#ff8800', '6': '#00ffff', '7': '#ff00ff', '8': '#ff0000'}
         for i in range(10):
             for j in range(10):
                 if self.game.revealed_cells[i][j]:
-                    cell_value = self.game.board[i][j]
-                    color = self.colors.get(cell_value, self.text_primary)
-                    self.buttons[i][j].config(text=cell_value, bg=self.bg_secondary, 
-                                             fg=color, relief='sunken', state='disabled')
+                    val = self.game.board[i][j]
+                    self.buttons[i][j].config(text=val, bg="#0a0a0a", relief="sunken", state="disabled", fg=colors.get(val, '#ffffff'))
+                elif self.game.flagged_cells[i][j]:
+                    self.buttons[i][j].config(text="🚩", bg="#1a1a1a", fg="#ff0000")
+                elif self.game.questioned_cells[i][j]:  # NEW: Show question mark
+                    self.buttons[i][j].config(text="❓", bg="#1a1a1a", fg="#ffd93d")
+                else:
+                    self.buttons[i][j].config(text="", bg="#1a1a1a")
 
     def reveal_all_mines(self):
         for i in range(10):
             for j in range(10):
-                if (i * 10 + j) in self.game.mine_locations:
-                    self.buttons[i][j].config(text='💣', bg='#ff3e6c', relief='sunken')
-                elif self.game.revealed_cells[i][j]:
-                    cell_value = self.game.board[i][j]
-                    color = self.colors.get(cell_value, self.text_primary)
-                    self.buttons[i][j].config(text=cell_value, bg=self.bg_secondary, 
-                                             fg=color, relief='sunken')
+                if (i * self.game.cols + j) in self.game.mine_locations:
+                    self.buttons[i][j].config(text="💣", bg="#ff0000", state="disabled")
 
     def show_leaderboard(self):
         self.clear_window()
+        main_frame = tk.Frame(self.root, bg="#000000")
+        main_frame.pack(expand=True, fill="both")
+        title_frame = tk.Frame(main_frame, bg="#000000")
+        title_frame.pack(pady=40)
+        tk.Label(title_frame, text="🏆 LEADERBOARD 🏆", font=("Arial", 48, "bold"), bg="#000000", fg="#00ff88").pack()
+        tk.Label(title_frame, text="Top Players - Fastest Times", font=("Arial", 16), bg="#000000", fg="#666666").pack(pady=10)
         
-        frame = tk.Frame(self.root, bg=self.bg_primary)
-        frame.pack(expand=True, fill='both', padx=20, pady=20)
+        canvas_frame = tk.Frame(main_frame, bg="#000000")
+        canvas_frame.pack(expand=True, fill="both", padx=100, pady=20)
+        canvas = tk.Canvas(canvas_frame, bg="#000000", highlightthickness=0)
+        scrollbar = tk.Scrollbar(canvas_frame, orient="vertical", command=canvas.yview, bg="#1a1a1a", troughcolor="#000000", width=20)
+        scrollable_frame = tk.Frame(canvas, bg="#000000")
+        scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
         
-        title_frame = tk.Frame(frame, bg=self.bg_primary)
-        title_frame.pack(pady=20)
-        
-        tk.Label(title_frame, text="🏆 LEADERBOARD", font=('Arial', 28, 'bold'),
-                bg=self.bg_primary, fg=self.accent_blue).pack()
-        tk.Label(title_frame, text="Hall of Champions", font=('Arial', 12),
-                bg=self.bg_primary, fg=self.text_secondary).pack()
-    
-        tree_container = tk.Frame(frame, bg=self.bg_card, relief='flat')
-        tree_container.pack(expand=True, fill='both', padx=20, pady=10)
-        
-        tree_frame = tk.Frame(tree_container, bg=self.bg_card)
-        tree_frame.pack(expand=True, fill='both', padx=15, pady=15)
-        
-        style = ttk.Style()
-        style.theme_use('default')
-        style.configure('Custom.Treeview',
-                       background=self.bg_secondary,
-                       foreground=self.text_primary,
-                       fieldbackground=self.bg_secondary,
-                       borderwidth=0,
-                       relief='flat')
-        style.configure('Custom.Treeview.Heading',
-                       background=self.bg_card,
-                       foreground=self.accent_blue,
-                       borderwidth=0,
-                       relief='flat',
-                       font=('Arial', 11, 'bold'))
-        style.map('Custom.Treeview',
-                 background=[('selected', self.bg_primary)])
-        
-        scrollbar = ttk.Scrollbar(tree_frame)
-        scrollbar.pack(side='right', fill='y')
-        
-        tree = ttk.Treeview(tree_frame, columns=('Rank', 'Player', 'Time', 'Difficulty', 'Date'),
-                           show='headings', yscrollcommand=scrollbar.set, height=12,
-                           style='Custom.Treeview')
-        
-        tree.heading('Rank', text='#')
-        tree.heading('Player', text='Player')
-        tree.heading('Time', text='Time (s)')
-        tree.heading('Difficulty', text='Difficulty')
-        tree.heading('Date', text='Date')
-        
-        tree.column('Rank', width=50, anchor='center')
-        tree.column('Player', width=150)
-        tree.column('Time', width=100, anchor='center')
-        tree.column('Difficulty', width=100, anchor='center')
-        tree.column('Date', width=180)
+        header_frame = tk.Frame(scrollable_frame, bg="#1a1a1a", height=60)
+        header_frame.pack(fill="x", padx=20, pady=(0, 10))
+        for text, color, width, anchor in [("RANK", "#FFD700", 8, "center"), ("PLAYER", "#00d4ff", 19, "w"), 
+                                            ("TIME", "#00ff88", 11, "w"), ("DIFFICULTY", "#ff6b6b", 17, "w"), 
+                                            ("DATE", "#ffd93d", 20, "w")]:
+            tk.Label(header_frame, text=text, font=("Times New Roman", 14, "bold"), bg="#1a1a1a", fg=color, width=width, anchor=anchor).pack(side="left", padx=20, pady=15)
         
         try:
             conn = mysql.connector.connect(
-                host='localhost',
-                user='root',
-                passwd='4589',
+                host='localhost', 
+                user='root', 
+                passwd='4589', 
                 database='minesweeper_leaderboard'
             )
             cursor = conn.cursor()
-            cursor.execute('''SELECT player_name, elapsed_time, difficulty_mode, timestamp 
-                             FROM leaderboard WHERE game_won = TRUE ORDER BY elapsed_time''')
+            cursor.execute('SELECT player_name, elapsed_time, difficulty_mode, timestamp FROM leaderboard ORDER BY elapsed_time LIMIT 50')
             rows = cursor.fetchall()
+            colors = ["#2a2a2a", "#1a1a1a"]
+            rank_colors = {1: "#FFD700", 2: "#C0C0C0", 3: "#CD7F32"}
+            diff_colors = {"Easy": "#00ff88", "Medium": "#ffd93d", "Hard": "#ff6b6b"}
             
             for idx, row in enumerate(rows, 1):
-                tree.insert('', 'end', values=(f'{idx}', row[0], row[1], row[2], row[3]))
+                row_frame = tk.Frame(scrollable_frame, bg=colors[idx % 2], height=50)
+                row_frame.pack(fill="x", padx=20, pady=2)
+                rank_text = f"#{idx}" if idx > 3 else ["🥇", "🥈", "🥉"][idx-1]
+                rank_font_size = 18  
+                tk.Label(row_frame, text=rank_text, font=("Arial", rank_font_size, "bold"), bg=colors[idx % 2], 
+                        fg=rank_colors.get(idx, "#ffffff"), width=6, anchor="center").pack(side="left", padx=20, pady=12)
+                tk.Label(row_frame, text=row[0], font=("Arial", 13), bg=colors[idx % 2], fg= "#00d4ff", width=17, anchor="w").pack(side="left", padx=20, pady=12)
+                tk.Label(row_frame, text=f"{row[1]:.2f}s", font=("Arial", 16, "bold"), bg=colors[idx % 2], fg="#00ff88", width=12, anchor="center").pack(side="left", padx=20, pady=12)
+                tk.Label(row_frame, text=row[2], font=("Arial", 13, "bold"), bg=colors[idx % 2], fg=diff_colors.get(row[2], "#ffffff"), width=15, anchor="center").pack(side="left", padx=20, pady=12)
+                tk.Label(row_frame, text=str(row[3]), font=("Arial", 11, "bold"), bg=colors[idx % 2], fg="#ffd93d", width=20, anchor="center").pack(side="left", padx=20, pady=12)
             
+            if not rows:
+                tk.Label(scrollable_frame, text="No records yet. Be the first to play!", font=("Arial", 18), bg="#000000", fg="#666666").pack(pady=50)
             cursor.close()
             conn.close()
+        except mysql.connector.Error as e:
+            error_msg = f"Database connection error: {str(e)}"
+            print(error_msg)
+            tk.Label(scrollable_frame, text=f"Could not load leaderboard\n{error_msg}", 
+                    font=("Arial", 16), bg="#000000", fg="#ff6b6b").pack(pady=50)
         except Exception as e:
-            messagebox.showerror("Error", f"Could not load leaderboard: {e}")
+            error_msg = f"Unexpected error: {str(e)}"
+            print(error_msg)
+            tk.Label(scrollable_frame, text=f"Could not load leaderboard\n{error_msg}", 
+                    font=("Arial", 16), bg="#000000", fg="#ff6b6b").pack(pady=50)
         
-        scrollbar.config(command=tree.yview)
-        tree.pack(expand=True, fill='both')
-        back_btn = tk.Button(frame, text="← Back to Main Menu", command=self.show_main_menu,
-                            font=('Arial', 14, 'bold'), width=22, height=2,
-                            bg=self.bg_secondary, fg=self.text_secondary, relief='flat',
-                            bd=0, cursor='hand2')
-        back_btn.pack(pady=20)
-        self.add_hover_effect(back_btn, self.text_secondary)
+        button_frame = tk.Frame(main_frame, bg="#000000")
+        button_frame.pack(pady=30)
+        self.create_button(button_frame, "BACK TO MENU", 18, self.show_main_menu).pack()
+
+    def show_splash_screen(self):
+        self.clear_window()
+        frame = tk.Frame(self.root, bg="#000000")
+        frame.pack(expand=True, fill="both")
+        
+        try:
+            logo_path = os.path.join(os.path.dirname(__file__), "logo.png")
+            self.logo_photo = tk.PhotoImage(file=logo_path)
+            logo_label = tk.Label(frame, image=self.logo_photo, bg="#000000", cursor="hand2")
+            logo_label.pack(expand=True)
+            logo_label.bind("<Button-1>", lambda e: self.show_main_menu())
+            logo_label.focus_set()
+            frame.bind("<Button-1>", lambda e: self.show_main_menu())
+        except FileNotFoundError:
+            print("Warning: logo.png not found. Skipping splash screen.")
+            self.show_main_menu()
+        except Exception as e:
+            print(f"Error loading splash screen: {e}")
+            self.show_main_menu()
 
     def clear_window(self):
         self.timer_running = False
@@ -505,5 +380,5 @@ class MinesweeperGUI:
 
 if __name__ == "__main__":
     root = tk.Tk()
-    app = MinesweeperGUI(root)
+    MinesweeperGUI(root)
     root.mainloop()
